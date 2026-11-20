@@ -9,6 +9,7 @@ import { T } from "gt-react";
 import { useEffect, useState } from "react";
 
 import ChatView from "./ChatView";
+import { ThreadSplitLayout } from "../fork/split/ThreadSplitLayout";
 import { BackgroundThreadContext, HiddenThreadContext } from "./chat/backgroundThread";
 import { Button } from "./ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
@@ -240,7 +241,11 @@ export function ThreadRouteView({
       inert={background}
     >
       <BackgroundThreadContext value={background}>
-        <HiddenThreadContext value={background}>{view}</HiddenThreadContext>
+        <HiddenThreadContext value={background}>
+          <ThreadSplitLayout mainRef={serverThreadRef} hidden={background}>
+            {view}
+          </ThreadSplitLayout>
+        </HiddenThreadContext>
       </BackgroundThreadContext>
       {background ? null : redirect}
     </SidebarInset>
