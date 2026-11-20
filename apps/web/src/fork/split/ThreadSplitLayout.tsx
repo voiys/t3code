@@ -9,6 +9,7 @@ import {
   useEffect,
   useEffectEvent,
   useRef,
+  useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
@@ -29,6 +30,8 @@ import { toastManager } from "~/components/ui/toast";
 import { cn } from "~/lib/utils";
 import { useQuietThreadShell } from "~/state/entities";
 import { buildThreadRouteParams } from "~/threadRoutes";
+
+import { dissolveElement, prefersReducedMotion } from "./dissolve";
 
 import {
   MAX_SLOTS,
@@ -52,6 +55,8 @@ import {
 const MIN_COLUMN_PX = 280;
 const MIN_ROW_PX = 200;
 const DRAG_THRESHOLD_PX = 4;
+/** How long the other panes take to slide into a closed pane's place. */
+const REFLOW_MS = 300;
 
 /** The pane being dragged by its grip; kept out of the layout so moves only redraw the overlay. */
 const usePaneDragStore = create<{
@@ -140,6 +145,32 @@ export function ThreadSplitLayout(props: {
   };
   const focusSlot = (slotId: string) => goTo(threadSplitActions.focus(slotId, mainRef));
   const closeSlot = (slotId: string) => goTo(threadSplitActions.close(slotId, mainRef));
+
+  // A pane whose thread settles dissolves, then the others slide into its place.
+  const dissolvingSlotIds = useRef(new Set<string>());
+  const [reflowing, setReflowing] = useState(false);
+  const dismissSettledSlot = async (slotId: string) => {
+    const state = resolveSplitView(useThreadSplitStore.getState(), latestMainRef.current);
+    if (slotCount(state.rows) < 2 || dissolvingSlotIds.current.has(slotId)) return;
+    dissolvingSlotIds.current.add(slotId);
+    // Hand focus to a neighbor first, so the sidebar's settle-and-advance leaves the route alone.
+    if (state.focusedSlotId === slotId) {
+      const flat = state.rows.flat();
+      const index = flat.findIndex((slot) => slot.id === slotId);
+      const neighbor = flat[index + 1] ?? flat[index - 1];
+      if (neighbor) goTo(threadSplitActions.focus(neighbor.id, latestMainRef.current));
+    }
+    const element = containerRef.current?.querySelector<HTMLElement>(
+      `[data-fork-split-slot="${CSS.escape(slotId)}"]`,
+    );
+    if (element) await dissolveElement(element);
+    dissolvingSlotIds.current.delete(slotId);
+    if (!prefersReducedMotion()) {
+      setReflowing(true);
+      window.setTimeout(() => setReflowing(false), REFLOW_MS + 80);
+    }
+    goTo(threadSplitActions.close(slotId, latestMainRef.current));
+  };
 
   const onAltClick = useEffectEvent((event: MouseEvent) => {
     if (hidden || !event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
@@ -262,8 +293,16 @@ export function ThreadSplitLayout(props: {
               "group/split-slot absolute flex min-h-0 min-w-0 flex-col overflow-hidden",
               isSplit && "[contain:layout]",
               isSplit && !focused && "opacity-55 transition-opacity hover:opacity-75",
+              reflowing && "transition-[left,top,width,height,opacity] duration-300 ease-drawer",
             )}
           >
+            {isSplit && slot.ref !== null ? (
+              <SlotSettleWatcher
+                key={scopedThreadKey(slot.ref)}
+                threadRef={slot.ref}
+                onSettled={() => void dismissSettledSlot(slot.id)}
+              />
+            ) : null}
             <BackgroundThreadContext value={hidden || !focused}>{content}</BackgroundThreadContext>
             {isSplit ? (
               <SlotGrip
@@ -277,6 +316,7 @@ export function ThreadSplitLayout(props: {
       })}
       {isSplit ? (
         <SplitDividers
+          reflowing={reflowing}
           rows={rows}
           rects={rects}
           rowWeights={rowWeights}
@@ -293,6 +333,23 @@ export function ThreadSplitLayout(props: {
       )}
     </div>
   );
+}
+
+/** Reports when this slot's thread goes from active to settled; a thread opened settled stays. */
+function SlotSettleWatcher(props: {
+  readonly threadRef: ScopedThreadRef;
+  readonly onSettled: () => void;
+}) {
+  const shell = useQuietThreadShell(props.threadRef);
+  const settled = shell?.settledOverride === "settled";
+  const wasSettled = useRef(settled);
+  const onSettled = useEffectEvent(props.onSettled);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- turns the shell's settled flag flipping on into the pane's exit
+  useEffect(() => {
+    if (settled && !wasSettled.current) onSettled();
+    wasSettled.current = settled;
+  }, [settled]);
+  return null;
 }
 
 function EmptySlot() {
@@ -338,6 +395,7 @@ function SlotGrip(props: {
 
 /** Resize handles between columns in a row and between the two rows. */
 function SplitDividers(props: {
+  readonly reflowing: boolean;
   readonly rows: ReadonlyArray<ReadonlyArray<SplitSlot>>;
   readonly rects: Map<string, Rect>;
   readonly rowWeights: ReadonlyArray<number>;
@@ -403,7 +461,10 @@ function SplitDividers(props: {
             top: `${left.top * 100}%`,
             height: `${left.height * 100}%`,
           }}
-          className="group/divider absolute z-30 w-2 -translate-x-1/2 cursor-col-resize touch-none"
+          className={cn(
+            "group/divider absolute z-30 w-2 -translate-x-1/2 cursor-col-resize touch-none",
+            props.reflowing && "transition-[left,top,height] duration-300 ease-drawer",
+          )}
         >
           <div className="mx-auto h-full w-px bg-border transition-colors group-hover/divider:w-[3px] group-hover/divider:bg-primary/50" />
         </div>
@@ -435,7 +496,10 @@ function SplitDividers(props: {
         aria-orientation="horizontal"
         onPointerDown={startResize}
         style={{ top: `${top.height * 100}%` }}
-        className="group/divider absolute inset-x-0 z-30 flex h-2 -translate-y-1/2 cursor-row-resize touch-none flex-col justify-center"
+        className={cn(
+          "group/divider absolute inset-x-0 z-30 flex h-2 -translate-y-1/2 cursor-row-resize touch-none flex-col justify-center",
+          props.reflowing && "transition-[top] duration-300 ease-drawer",
+        )}
       >
         <div className="h-px w-full bg-border transition-colors group-hover/divider:h-[3px] group-hover/divider:bg-primary/50" />
       </div>
