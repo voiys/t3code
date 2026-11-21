@@ -1,6 +1,6 @@
 import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { ScopedThreadRef } from "@t3tools/contracts";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import { T, useGT } from "gt-react";
 import { XIcon } from "lucide-react";
 import {
@@ -29,9 +29,9 @@ import type { ThreadContextDropRef } from "~/components/chat/threadContextDrop.l
 import { toastManager } from "~/components/ui/toast";
 import { cn } from "~/lib/utils";
 import { useQuietThreadShell } from "~/state/entities";
-import { buildThreadRouteParams } from "~/threadRoutes";
+import { buildThreadRouteParams, resolveThreadRouteTarget } from "~/threadRoutes";
 
-import { dissolveElement, prefersReducedMotion } from "./dissolve";
+import { dissolveElement, prefersReducedMotion, restoreDissolvedElement } from "./dissolve";
 
 import {
   MAX_SLOTS,
@@ -101,6 +101,7 @@ export function ThreadSplitLayout(props: {
   const { mainRef, hidden } = props;
   const gt = useGT();
   const navigate = useNavigate();
+  const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
   const storedRows = useThreadSplitStore((state) => state.rows);
   const storedFocusedSlotId = useThreadSplitStore((state) => state.focusedSlotId);
@@ -117,13 +118,20 @@ export function ThreadSplitLayout(props: {
   const focusedSlotId = isSplit ? resolved.focusedSlotId : soloSlotId;
   const rects = slotRects(rows, columnWeights, rowWeights);
   const mainKey = mainRef === null ? null : scopedThreadKey(mainRef);
-  // A pane drag can focus its pane (and move the route) after it starts; its drop reads this.
-  const latestMainRef = useRef(mainRef);
+  /**
+   * The thread of the latest location, including a navigation still loading. Handlers that run
+   * after an await (a dissolve, a pane drag) read this, since `mainRef` from their render can be
+   * a navigation behind.
+   */
+  const liveRouteRef = (): ScopedThreadRef | null => {
+    const matches = router.matchRoutes(router.latestLocation);
+    const target = resolveThreadRouteTarget(matches.at(-1)?.params ?? {});
+    return target?.kind === "server" ? target.threadRef : null;
+  };
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- saves which slot the route resolved to, so the split survives reloads and later focus changes start from it
   useEffect(() => {
     const routeRef = mainKey === null ? null : parseScopedThreadKey(mainKey);
-    latestMainRef.current = routeRef;
     if (hidden) return;
     threadSplitActions.sync(routeRef);
   }, [hidden, mainKey]);
@@ -132,11 +140,14 @@ export function ThreadSplitLayout(props: {
     if (ref === null) return;
     void navigate({ to: "/$environmentId/$threadId", params: buildThreadRouteParams(ref) });
   };
-  const openInSplit = (ref: ScopedThreadRef, zone?: DropZone) => {
-    if (threadSplitActions.open(ref, mainRef, zone)) {
-      goTo(ref);
-      return;
-    }
+  /**
+   * Opens threads in the split, the first in `zone` and the rest wherever there is room. Each
+   * open sees the route the previous one moved focus to, so a batch never blanks its own panes.
+   */
+  const openInSplit = (refs: readonly ScopedThreadRef[], zone?: DropZone) => {
+    const { opened, refused } = threadSplitActions.openMany(refs, mainRef, zone);
+    goTo(opened);
+    if (refused === 0) return;
     toastManager.add({
       type: "info",
       title: gt("Split view is full"),
@@ -149,27 +160,46 @@ export function ThreadSplitLayout(props: {
   // A pane whose thread settles dissolves, then the others slide into its place.
   const dissolvingSlotIds = useRef(new Set<string>());
   const [reflowing, setReflowing] = useState(false);
+  const showsThread = (ref: ScopedThreadRef | null, threadKey: string) =>
+    ref !== null && scopedThreadKey(ref) === threadKey;
   const dismissSettledSlot = async (slotId: string) => {
-    const state = resolveSplitView(useThreadSplitStore.getState(), latestMainRef.current);
-    if (slotCount(state.rows) < 2 || dissolvingSlotIds.current.has(slotId)) return;
+    const state = resolveSplitView(useThreadSplitStore.getState(), liveRouteRef());
+    const settled = state.rows.flat().find((slot) => slot.id === slotId)?.ref ?? null;
+    if (slotCount(state.rows) < 2 || settled === null || dissolvingSlotIds.current.has(slotId)) {
+      return;
+    }
+    const settledKey = scopedThreadKey(settled);
     dissolvingSlotIds.current.add(slotId);
-    // Hand focus to a neighbor first, so the sidebar's settle-and-advance leaves the route alone.
+    // Hand focus to the nearest pane with a thread first, so the sidebar's settle-and-advance
+    // leaves the route alone. An empty draft pane cannot take the route.
     if (state.focusedSlotId === slotId) {
       const flat = state.rows.flat();
       const index = flat.findIndex((slot) => slot.id === slotId);
-      const neighbor = flat[index + 1] ?? flat[index - 1];
-      if (neighbor) goTo(threadSplitActions.focus(neighbor.id, latestMainRef.current));
+      const neighbor = flat
+        .map((slot, at) => ({ slot, distance: Math.abs(at - index) }))
+        .filter(({ slot }) => slot.id !== slotId && slot.ref !== null)
+        .sort((a, b) => a.distance - b.distance)[0]?.slot;
+      if (neighbor) goTo(threadSplitActions.focus(neighbor.id, liveRouteRef()));
     }
     const element = containerRef.current?.querySelector<HTMLElement>(
       `[data-fork-split-slot="${CSS.escape(slotId)}"]`,
     );
     if (element) await dissolveElement(element);
     dissolvingSlotIds.current.delete(slotId);
-    if (!prefersReducedMotion()) {
-      setReflowing(true);
-      window.setTimeout(() => setReflowing(false), REFLOW_MS + 80);
+    // Panes animate into the gap only if it opens, so the transition is on before the close.
+    const animate = !prefersReducedMotion();
+    if (animate) setReflowing(true);
+    const { closed, next } = threadSplitActions.closeSettled(slotId, settled, liveRouteRef());
+    if (animate) window.setTimeout(() => setReflowing(false), closed ? REFLOW_MS + 80 : 0);
+    // The slot took another thread while it dissolved: that thread stays.
+    if (!closed) {
+      if (element) restoreDissolvedElement(element);
+      return;
     }
-    goTo(threadSplitActions.close(slotId, latestMainRef.current));
+    if (next !== null) goTo(next);
+    // Nothing else can show the route (only empty panes are left, or the split already went
+    // back to one view on the settled thread): leave it rather than keep the settled thread up.
+    else if (showsThread(liveRouteRef(), settledKey)) void navigate({ to: "/" });
   };
 
   const onAltClick = useEffectEvent((event: MouseEvent) => {
@@ -184,7 +214,7 @@ export function ThreadSplitLayout(props: {
     if (ref === null) return;
     event.preventDefault();
     event.stopPropagation();
-    openInSplit(ref);
+    openInSplit([ref]);
   });
   const onKeyDown = useEffectEvent((event: KeyboardEvent) => {
     if (hidden || !isSplit || focusedSlotId === null || event.key.toLowerCase() !== "w") return;
@@ -232,7 +262,7 @@ export function ThreadSplitLayout(props: {
       window.removeEventListener("keydown", escape, true);
       usePaneDragStore.setState({ drag: null });
       if (!commit || !dragging || point === undefined) return;
-      const routeRef = latestMainRef.current;
+      const routeRef = liveRouteRef();
       const current = resolveSplitView(useThreadSplitStore.getState(), routeRef).rows;
       const target = zoneAtPoint(
         containerRef.current,
@@ -523,7 +553,7 @@ function SplitDragOverlay(props: {
   readonly rows: ReadonlyArray<ReadonlyArray<SplitSlot>>;
   readonly rects: Map<string, Rect>;
   readonly containerRef: RefObject<HTMLDivElement | null>;
-  readonly onThreadDrop: (ref: ScopedThreadRef, zone?: DropZone) => void;
+  readonly onThreadDrop: (refs: readonly ScopedThreadRef[], zone?: DropZone) => void;
 }) {
   const gt = useGT();
   const paneDrag = usePaneDragStore((state) => state.drag);
@@ -565,15 +595,19 @@ function SplitDragOverlay(props: {
       composer.dispatchEvent(new CustomEvent(THREAD_CONTEXT_DROP_EVENT, { detail: refs }));
       return;
     }
-    const dropTarget = zoneAtPoint(props.containerRef.current, rowLengths, null, at);
+    const threads = refs.map((ref) => ({
+      environmentId: ref.environmentId,
+      threadId: ref.threadId,
+    }));
+    // A thread already in a pane moves, so its zone is planned against the layout without it.
+    const firstKey = scopedThreadKey(threads[0]!);
+    const existing = props.rows
+      .flat()
+      .find((slot) => slot.ref !== null && scopedThreadKey(slot.ref) === firstKey);
+    const from = existing ? findSlot(props.rows, existing.id) : null;
+    const dropTarget = zoneAtPoint(props.containerRef.current, rowLengths, from, at);
     if (dropTarget === null) return;
-    const [first, ...rest] = refs;
-    props.onThreadDrop(
-      { environmentId: first!.environmentId, threadId: first!.threadId },
-      dropTarget.zone,
-    );
-    for (const ref of rest)
-      props.onThreadDrop({ environmentId: ref.environmentId, threadId: ref.threadId });
+    props.onThreadDrop(threads, dropTarget.zone);
   });
   const attachCatcher = (node: HTMLDivElement | null) => {
     if (node === null) return;

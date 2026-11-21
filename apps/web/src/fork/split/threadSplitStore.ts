@@ -136,34 +136,77 @@ export const threadSplitActions = {
   },
 
   /**
-   * Opens `ref` in a new slot and focuses it: in `zone`, or the first spot with room. Focuses
-   * the slot already showing it instead. Returns false when the grid is full.
+   * Opens `ref` in a new slot and focuses it: in `zone`, or the first spot with room. A thread
+   * already open moves to `zone` (computed against the layout without it) or just takes focus.
+   * Returns false when nothing could open: the grid is full or the zone does not fit.
    */
   open(ref: ScopedThreadRef, routeRef: ScopedThreadRef | null, zone?: DropZone): boolean {
     const { rows } = currentRows(routeRef);
     const existing = rows.flat().find((slot) => sameRef(slot.ref, ref));
-    if (existing && !zone) {
+    if (existing) {
+      if (zone) return threadSplitActions.move(existing.id, zone, routeRef);
       if (slotCount(rows) > 1) set({ rows, focusedSlotId: existing.id });
-      return true;
-    }
-    if (existing && zone) {
-      threadSplitActions.move(existing.id, zone, routeRef);
       return true;
     }
     const target = zone ?? autoPlacement(rows.map((row) => row.length));
     if (target === null) return false;
     const added: SplitSlot = { id: newSlotId(), ref: plainRef(ref) };
-    set(relayout(applyDrop(rows, null, added, target), added.id));
+    const next = applyDrop(rows, null, added, target);
+    if (next === null) return false;
+    set(relayout(next, added.id));
     return true;
   },
 
-  /** Moves a slot to `zone`, computed against the layout without it. */
-  move(slotId: string, zone: DropZone, routeRef: ScopedThreadRef | null) {
+  /**
+   * Opens several threads: the first in `zone`, the rest wherever there is room. Each open sees
+   * the route the previous one focused, so a batch never blanks its own panes.
+   */
+  openMany(
+    refs: readonly ScopedThreadRef[],
+    routeRef: ScopedThreadRef | null,
+    zone?: DropZone,
+  ): { opened: ScopedThreadRef | null; refused: number } {
+    let route = routeRef;
+    let opened: ScopedThreadRef | null = null;
+    let refused = 0;
+    for (const [index, ref] of refs.entries()) {
+      if (threadSplitActions.open(ref, route, index === 0 ? zone : undefined)) {
+        opened = ref;
+        route = ref;
+      } else {
+        refused += 1;
+      }
+    }
+    return { opened, refused };
+  },
+
+  /**
+   * Closes a settled thread's slot, but only while the slot still shows that thread: one that
+   * took another thread meanwhile (the route moved into it) stays. `next` is the thread to route
+   * to when the closed slot had focus, null when no pane with a thread is left to take it.
+   */
+  closeSettled(
+    slotId: string,
+    settledRef: ScopedThreadRef,
+    routeRef: ScopedThreadRef | null,
+  ): { closed: boolean; next: ScopedThreadRef | null } {
+    const slot = currentRows(routeRef)
+      .rows.flat()
+      .find((candidate) => candidate.id === slotId);
+    if (!slot || !sameRef(slot.ref, settledRef)) return { closed: false, next: null };
+    return { closed: true, next: threadSplitActions.close(slotId, routeRef) };
+  },
+
+  /** Moves a slot to `zone`, computed against the layout without it; false when it can't. */
+  move(slotId: string, zone: DropZone, routeRef: ScopedThreadRef | null): boolean {
     const { rows, focusedSlotId } = currentRows(routeRef);
     const from = findSlot(rows, slotId);
-    if (from === null) return;
+    if (from === null) return false;
     const slot = rows[from.row]![from.index]!;
-    set(relayout(applyDrop(rows, from, slot, zone), focusedSlotId));
+    const next = applyDrop(rows, from, slot, zone);
+    if (next === null) return false;
+    set(relayout(next, focusedSlotId));
+    return true;
   },
 
   /** Focuses a slot; returns its thread so the route can follow. */

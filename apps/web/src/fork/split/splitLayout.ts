@@ -67,21 +67,42 @@ export function siblingZoneRects(base: ReadonlyArray<number>, zone: DropZone): R
   return Array.from({ length: columns }, (_, index) => ({ ...zone.rect, left: index / columns }));
 }
 
-/** The rows after moving (or adding, when `from` is null) `item` into `zone`. */
+/** Whether rows fit the grid: 1..MAX_ROWS rows of 1..MAX_COLUMNS slots, MAX_SLOTS in all. */
+function isValidGrid(rows: ReadonlyArray<ReadonlyArray<unknown>>): boolean {
+  const total = rows.reduce((sum, row) => sum + row.length, 0);
+  return (
+    rows.length >= 1 &&
+    rows.length <= MAX_ROWS &&
+    total <= MAX_SLOTS &&
+    rows.every((row) => row.length >= 1 && row.length <= MAX_COLUMNS)
+  );
+}
+
+/**
+ * The rows after moving (or adding, when `from` is null) `item` into `zone`, or null when the
+ * zone does not fit the layout without the item or the result breaks the grid's limits.
+ */
 export function applyDrop<T>(
   rows: ReadonlyArray<ReadonlyArray<T>>,
   from: GridPosition | null,
   item: T,
   zone: DropZone,
-): T[][] {
+): T[][] | null {
   let next = rows.map((row) => [...row]);
   if (from) {
+    if (next[from.row]?.[from.index] === undefined) return null;
     next[from.row]!.splice(from.index, 1);
     next = next.filter((row) => row.length > 0);
   }
-  if (zone.kind === "row") next.splice(zone.row, 0, [item]);
-  else next[zone.row]!.splice(zone.index, 0, item);
-  return next;
+  if (zone.kind === "row") {
+    if (zone.row < 0 || zone.row > next.length) return null;
+    next.splice(zone.row, 0, [item]);
+  } else {
+    const row = next[zone.row];
+    if (row === undefined || zone.index < 0 || zone.index > row.length) return null;
+    row.splice(zone.index, 0, item);
+  }
+  return isValidGrid(next) ? next : null;
 }
 
 /** Where a pane opened without a drop goes: the first row with room, else a new bottom row. */

@@ -236,6 +236,21 @@ function createDust(element: HTMLElement, rect: DOMRect, slow: number) {
   };
 }
 
+/** Puts back an element whose dissolve was abandoned, e.g. because its slot shows another thread. */
+export function restoreDissolvedElement(element: HTMLElement) {
+  for (const property of [
+    "opacity",
+    "filter",
+    "transform",
+    "pointerEvents",
+    "willChange",
+    "maskImage",
+    "webkitMaskImage",
+  ] as const) {
+    element.style[property] = "";
+  }
+}
+
 /**
  * Dissolves `element` in place. Resolves when it has fully gone; the element is left invisible
  * and inert so the caller can remove it.
