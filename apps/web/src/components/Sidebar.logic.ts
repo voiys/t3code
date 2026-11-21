@@ -220,7 +220,9 @@ export type SidebarListMarker =
   | "pinned-divider"
   | "working-header"
   | "snoozed-header"
-  | "settled-header";
+  | "settled-header"
+  // Fork-only section markers (apps/web/src/fork/sidebar).
+  | `fork-${string}`;
 
 export function sidebarMarkerId(marker: SidebarListMarker): string {
   return `${SIDEBAR_MARKER_PREFIX}${marker}`;

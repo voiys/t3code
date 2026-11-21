@@ -281,6 +281,19 @@ import {
   useSidebarDrafts,
 } from "./sidebar/SidebarDraftBlock";
 import {
+  ForkSidebarMarkerRow,
+  handleSectionMenuChoice,
+  useForkSidebarSections,
+  withSectionMenu,
+} from "../fork/sidebar/ForkSidebarSections";
+import {
+  groupActiveItems,
+  groupPinnedItems,
+  sectionAtDrop,
+  sectionOfThread,
+} from "../fork/sidebar/sections.logic";
+import { sidebarSectionActions } from "../fork/sidebar/sectionsStore";
+import {
   SidebarProjectFolderHeader,
   sidebarFolderRowId,
 } from "./sidebar/SidebarProjectFolderHeader";
@@ -1142,6 +1155,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     routeThreadRef === null
       ? null
       : scopedThreadKey(resolveListedAncestorThreadRef(routeThreadRef, threads));
+  const forkSections = useForkSidebarSections();
   const isSearchingThreads = threadSearchQuery.trim().length > 0;
   // The open draft's first send names its thread in place; a finalized draft reached by
   // navigation resolves through its redirect instead, and still reveals.
@@ -2013,11 +2027,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     }
     const items: SidebarListItem[] = [{ kind: "marker", marker: "pinned-header" }];
     const pinnedRows = rowsOf(pinnedThreads, "pinned");
-    items.push(...pinnedRows);
+    items.push(...groupPinnedItems(pinnedRows, forkSections, routeRowThreadKey));
     items.push({ kind: "marker", marker: "pinned-divider" });
     const activeRows = rowsOf(activeThreads, "active");
     items.push({ kind: "marker", marker: "active-placeholder" });
-    items.push(...activeRows);
+    items.push(
+      ...(projectFolders === null
+        ? groupActiveItems(activeRows, forkSections, routeRowThreadKey)
+        : activeRows),
+    );
     if (workingThreads.length > 0) {
       items.push({ kind: "marker", marker: "working-header" });
       items.push(...rowsOf(visibleWorkingThreads, "working"));
@@ -2124,6 +2142,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       (id) => {
         const target = resolveSidebarDropTarget(sidebarListItems, draggedThreadKey, id);
         if (target === null) return false;
+        // Fork: crossing a section header is a move even when the thread order stays put.
+        const forkSection = sectionAtDrop(sidebarListItems, draggedThreadKey, id);
+        if (
+          forkSection !== undefined &&
+          forkSection !== sectionOfThread(forkSections, draggedThreadKey)
+        )
+          return true;
         return (
           planSidebarThreadDrop({
             activeKey: draggedThreadKey,
@@ -2158,6 +2183,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         : resolveSidebarDropTarget(sidebarListItems, activeKey, String(event.over.id));
     const activeThread = threadByKey.get(activeKey);
     if (activeSection === undefined || target === null || activeThread === undefined) return;
+    // Fork: the section header above the dropped row becomes its section.
+    const forkSection =
+      event.over === null
+        ? undefined
+        : sectionAtDrop(sidebarListItems, activeKey, String(event.over.id));
+    if (forkSection !== undefined) sidebarSectionActions.assign([activeKey], forkSection);
     const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
     const plan = planSidebarThreadDrop({
       activeKey,
@@ -2718,48 +2749,57 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           ) ?? null;
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
-            buildThreadActionMenuItems({
-              canOperate: readEnvironmentScope(
-                threadRef.environmentId,
-                AuthOrchestrationOperateScope,
-              ),
-              canTriage: threadTriagePermitted(threadRef.environmentId),
-              branch: thread.branch ?? null,
-              // An archived project is not a filter choice.
-              projectFilter:
-                threadProjectGroup && !threadProjectGroup.archived
-                  ? {
-                      label: threadProjectGroup.displayName,
-                      isActive: projectScopeKeys.includes(threadProjectGroup.projectKey),
-                    }
-                  : null,
-              isPinned,
-              isSettled,
-              autoSettleEnabled: thread.autoSettleDisabledAt == null,
-              isSnoozed,
-              canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
-              isRegeneratingTitle,
-              isRunning: !threadRuntimeCanArchive(thread.runtime),
-              hasCompletedRun: thread.latestRun?.completedAt != null,
-              canShareWithGuest: appAtomRegistry.get(
-                canShareWithGuestAtom(threadRef.environmentId),
-              ),
-              canTurnIntoProject: canTurnThreadIntoProject(threadRef),
-              canRename: !fromSearch,
-              supports: {
-                settlement: configLoaded,
-                autoSettleOptOut: supportsAutoSettleOptOut,
-                snooze: configLoaded,
-                pinning: configLoaded,
-                titleRegeneration: configLoaded,
+            withSectionMenu(
+              buildThreadActionMenuItems({
+                canOperate: readEnvironmentScope(
+                  threadRef.environmentId,
+                  AuthOrchestrationOperateScope,
+                ),
+                canTriage: threadTriagePermitted(threadRef.environmentId),
+                branch: thread.branch ?? null,
+                // An archived project is not a filter choice.
+                projectFilter:
+                  threadProjectGroup && !threadProjectGroup.archived
+                    ? {
+                        label: threadProjectGroup.displayName,
+                        isActive: projectScopeKeys.includes(threadProjectGroup.projectKey),
+                      }
+                    : null,
+                isPinned,
+                isSettled,
+                autoSettleEnabled: thread.autoSettleDisabledAt == null,
+                isSnoozed,
+                canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
+                isRegeneratingTitle,
+                isRunning: !threadRuntimeCanArchive(thread.runtime),
+                hasCompletedRun: thread.latestRun?.completedAt != null,
+                canShareWithGuest: appAtomRegistry.get(
+                  canShareWithGuestAtom(threadRef.environmentId),
+                ),
+                canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+                canRename: !fromSearch,
+                supports: {
+                  settlement: configLoaded,
+                  autoSettleOptOut: supportsAutoSettleOptOut,
+                  snooze: configLoaded,
+                  pinning: configLoaded,
+                  titleRegeneration: configLoaded,
+                },
+                snoozePresets,
+              }),
+              threadKey,
+              {
+                title: gt("Move to section"),
+                active: gt("Active", { $context: "sidebar section" }),
+                newSection: gt("New section…"),
               },
-              snoozePresets,
-            }),
+            ),
             position,
             source,
           ),
         );
         if (clicked._tag === "Failure" || clicked.value === null) return;
+        if (handleSectionMenuChoice(clicked.value, threadKey, gt("New section"))) return;
         if (
           threadActionRequiresOperate(clicked.value) &&
           !checkThreadOperations([thread], isThreadTriageAction(clicked.value))
@@ -3650,6 +3690,17 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           // Folders draw active rows in their own place below.
                           if (projectFolders !== null && item.section === "active") continue;
                           items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
+                          continue;
+                        }
+                        if (item.marker.startsWith("fork-")) {
+                          items.push(
+                            <ForkSidebarMarkerRow
+                              key={item.marker}
+                              marker={item.marker}
+                              pinnedCount={pinnedThreads.length}
+                              activeKeys={activeKeys}
+                            />,
+                          );
                           continue;
                         }
                         if (projectFolders !== null && item.marker === "active-placeholder") {

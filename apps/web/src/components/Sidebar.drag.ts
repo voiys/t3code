@@ -8,6 +8,7 @@ import {
   type SidebarListMarker,
   type SidebarSection,
 } from "./Sidebar.logic";
+import { projectForkRegions } from "../fork/sidebar/sections.logic";
 
 const stationary = { x: 0, y: 0, scaleX: 1, scaleY: 1 };
 const hidden = { ...stationary, scaleY: 0 };
@@ -172,10 +173,13 @@ export function createSidebarSortingStrategy(input: {
       if (groups[name].length > 0) projected.push(...groups[name]);
       else marker(`${name}-placeholder`);
     };
+    const fork = projectForkRegions(items, activeIndex, overIndex, target.section);
     marker("pinned-header");
+    if (fork) projected.push(...fork.pinnedHeader);
     projected.push(...groups.pinned);
     marker("pinned-divider");
-    section("active");
+    if (fork) projected.push(...fork.active);
+    else section("active");
     if (items.some((item) => item.kind === "marker" && item.marker === "working-header")) {
       marker("working-header");
       projected.push(...groups.working);
@@ -201,7 +205,9 @@ export function createSidebarSortingStrategy(input: {
       const moved = item.kind === "thread" && item.key === active.key;
       return item.kind === "marker" &&
         (item.marker === "pinned-header" || item.marker === "pinned-divider")
-        ? labelHeight
+        ? fork?.coveredLabels.has(item.marker)
+          ? 0
+          : labelHeight
         : item.kind === "marker" && item.marker.endsWith("placeholder")
           ? slimHeight
           : moved

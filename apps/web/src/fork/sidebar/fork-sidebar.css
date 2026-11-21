@@ -1,0 +1,24 @@
+/* Fork-only: a resting line between pinned and unpinned threads. Upstream's divider marker is a
+   zero-height row that only shows a label while dragging; this draws a rule in it otherwise. */
+[data-testid="sidebar-pinned-divider"]:not(:has(.sidebar-drag-boundary-label))::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0.5rem;
+  top: 0;
+  height: 1px;
+  background: var(--sidebar-border);
+}
+
+/* No pinned threads, no divider. */
+[data-testid="sidebar-pinned-header"] + [data-testid="sidebar-pinned-divider"]::after {
+  display: none;
+}
+
+/* While dragging, upstream labels the pinned and active boundaries; the fork's own headers already
+   name them, so those labels stay hidden (the drag preview gives them no space either). */
+[data-testid="sidebar-pinned-header"]:has(+ [data-testid="fork-sidebar-pinned-header"])
+  .sidebar-drag-boundary-label,
+[data-testid="sidebar-pinned-divider"]:has(+ * + [data-testid="fork-sidebar-active-header"])
+  .sidebar-drag-boundary-label {
+  visibility: hidden;
+}
