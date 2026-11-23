@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 import { resolveStorage } from "../../lib/storage";
+import { reorderShownSections } from "./sections.logic";
 
 /**
  * Fork-only sidebar sections: named groups of active threads, kept on this device. Pinned and
@@ -21,6 +22,8 @@ export interface ForkSidebarSectionsState {
   membership: Record<string, string>;
   /** Collapsed sections by section id, PINNED_SECTION_KEY or ACTIVE_SECTION_KEY. */
   collapsed: Record<string, boolean>;
+  /** Sections toggled off in the sidebar filter; their threads leave the list. */
+  hidden: Record<string, boolean>;
   /** The section whose name is being edited inline; not persisted. */
   editingSectionId: string | null;
 }
@@ -29,6 +32,7 @@ const INITIAL_STATE: ForkSidebarSectionsState = {
   sections: [],
   membership: {},
   collapsed: {},
+  hidden: {},
   editingSectionId: null,
 };
 
@@ -39,7 +43,13 @@ export const useForkSidebarSectionsStore = create<ForkSidebarSectionsState>()(
       resolveStorage(typeof window !== "undefined" ? window.localStorage : undefined),
     ),
     version: 1,
-    partialize: ({ sections, membership, collapsed }) => ({ sections, membership, collapsed }),
+    // Saved state from before `hidden` existed merges over INITIAL_STATE, so it starts empty.
+    partialize: ({ sections, membership, collapsed, hidden }) => ({
+      sections,
+      membership,
+      collapsed,
+      hidden,
+    }),
     migrate: () => INITIAL_STATE,
   }),
 );
@@ -82,16 +92,35 @@ export const sidebarSectionActions = {
     const membership = Object.fromEntries(
       Object.entries(get().membership).filter(([, sectionId]) => sectionId !== id),
     );
-    const { [id]: _removed, ...collapsed } = get().collapsed;
-    set({ sections: get().sections.filter((section) => section.id !== id), membership, collapsed });
+    const { [id]: _collapsed, ...collapsed } = get().collapsed;
+    const { [id]: _hidden, ...hidden } = get().hidden;
+    set({
+      sections: get().sections.filter((section) => section.id !== id),
+      membership,
+      collapsed,
+      hidden,
+    });
   },
+  /** Moves a section one place among the shown sections. */
   move(id: string, delta: -1 | 1) {
-    const sections = [...get().sections];
-    const from = sections.findIndex((section) => section.id === id);
-    const to = from + delta;
-    if (from < 0 || to < 0 || to >= sections.length) return;
-    [sections[from], sections[to]] = [sections[to]!, sections[from]!];
-    set({ sections });
+    const { sections, hidden } = get();
+    const from = sections
+      .filter((section) => hidden[section.id] !== true)
+      .findIndex((section) => section.id === id);
+    if (from >= 0) sidebarSectionActions.reorderShown(id, from + delta);
+  },
+  /** Moves shown section `id` to `to` among the shown ones; Active stays below them all. */
+  reorderShown(id: string, to: number) {
+    const sections = reorderShownSections(get().sections, get().hidden, id, to);
+    if (sections) set({ sections });
+  },
+  /** Shows or hides a section's threads in the sidebar. */
+  toggleHidden(id: string) {
+    const { [id]: wasHidden, ...rest } = get().hidden;
+    set({ hidden: wasHidden === true ? rest : { ...rest, [id]: true } });
+  },
+  showAll() {
+    set({ hidden: {} });
   },
   /** Puts threads in a section, or back in Active when `sectionId` is null. */
   assign(threadKeys: readonly string[], sectionId: string | null) {

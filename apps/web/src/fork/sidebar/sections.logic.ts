@@ -6,10 +6,9 @@ import {
 } from "./sectionsStore";
 
 /**
- * Fork-only: sidebar sections as extra markers in the upstream list. The pinned header leads the
- * pinned rows; when sections exist, an Active header leads the threads in no section and each
- * section's header leads its own rows. Upstream drop logic ignores these markers, so rows still
- * reorder, pin and settle as before; the header above a dropped row decides its section.
+ * Fork-only: sections as extra markers in the upstream list, which its drop logic ignores. Shown
+ * sections lead their rows in saved order, then Active; the header above a dropped row decides
+ * its section. Hidden sections leave the whole list, as the project filter does. See tla/Sidebar.
  */
 
 const PINNED_HEADER = "fork-pinned-header";
@@ -43,12 +42,46 @@ const isForkMarkerItem = (item: SidebarListItem) =>
 const isShelfMarker = (marker: SidebarListMarker) =>
   marker === "working-header" || marker === "snoozed-header" || marker === "settled-header";
 
-type SectionsView = Pick<ForkSidebarSectionsState, "sections" | "membership" | "collapsed">;
+type SectionsView = Pick<
+  ForkSidebarSectionsState,
+  "sections" | "membership" | "collapsed" | "hidden"
+>;
 
 /** The section a thread shows in: its saved one if that still exists, else null (Active). */
-export function sectionOfThread(state: SectionsView, threadKey: string): string | null {
+export function sectionOfThread(
+  state: Pick<SectionsView, "sections" | "membership">,
+  threadKey: string,
+): string | null {
   const id = state.membership[threadKey];
   return id !== undefined && state.sections.some((section) => section.id === id) ? id : null;
+}
+
+/** Sections the filter shows, in their saved order. */
+export function shownSections(state: Pick<SectionsView, "sections" | "hidden">) {
+  return state.sections.filter((section) => state.hidden[section.id] !== true);
+}
+
+function isThreadFiltered(state: SectionsView, threadKey: string): boolean {
+  const id = sectionOfThread(state, threadKey);
+  return id !== null && state.hidden[id] === true;
+}
+
+const anyHidden = (state: Pick<SectionsView, "hidden">) =>
+  Object.values(state.hidden).some(Boolean);
+
+const shownRows = (rows: SidebarListItem[], state: SectionsView) =>
+  anyHidden(state)
+    ? rows.filter((row) => row.kind !== "thread" || !isThreadFiltered(state, row.key))
+    : rows;
+
+/** `threads` without those in sections toggled off, wherever they sit (pinned, shelves too). */
+export function withoutHiddenSections<T>(
+  threads: readonly T[],
+  state: SectionsView,
+  keyOf: (thread: T) => string,
+): readonly T[] {
+  if (!anyHidden(state)) return threads;
+  return threads.filter((thread) => !isThreadFiltered(state, keyOf(thread)));
 }
 
 /** A collapsed group keeps only the open thread, like upstream's collapsed shelves. */
@@ -60,10 +93,11 @@ export function groupPinnedItems(
   state: SectionsView,
   routeKey: string | null,
 ): SidebarListItem[] {
-  if (rows.length === 0) return rows;
+  const shown = shownRows(rows, state);
+  if (shown.length === 0) return shown;
   return [
     markerItem(PINNED_HEADER),
-    ...visibleRows(rows, state.collapsed[PINNED_SECTION_KEY] === true, routeKey),
+    ...visibleRows(shown, state.collapsed[PINNED_SECTION_KEY] === true, routeKey),
   ];
 }
 
@@ -72,20 +106,18 @@ export function groupActiveItems(
   state: SectionsView,
   routeKey: string | null,
 ): SidebarListItem[] {
-  if (state.sections.length === 0) return rows;
+  const sections = shownSections(state);
+  // Rows of filtered sections normally never get here; dropping them keeps headers honest.
+  const shown = shownRows(rows, state);
+  if (sections.length === 0) return shown;
   const loose: SidebarListItem[] = [];
-  const bySection = new Map<string, SidebarListItem[]>(
-    state.sections.map((section) => [section.id, []]),
-  );
-  for (const row of rows) {
+  const bySection = new Map<string, SidebarListItem[]>(sections.map((section) => [section.id, []]));
+  for (const row of shown) {
     const id = row.kind === "thread" ? sectionOfThread(state, row.key) : null;
     (id === null ? loose : bySection.get(id)!).push(row);
   }
-  const items: SidebarListItem[] = [
-    markerItem(ACTIVE_HEADER),
-    ...visibleRows(loose, state.collapsed[ACTIVE_SECTION_KEY] === true, routeKey),
-  ];
-  for (const section of state.sections) {
+  const items: SidebarListItem[] = [];
+  for (const section of sections) {
     const collapsed = state.collapsed[section.id] === true;
     const sectionRows = bySection.get(section.id)!;
     items.push(markerItem(`${SECTION_HEADER}${section.id}`));
@@ -94,11 +126,48 @@ export function groupActiveItems(
     }
     items.push(...visibleRows(sectionRows, collapsed, routeKey));
   }
+  items.push(
+    markerItem(ACTIVE_HEADER),
+    ...visibleRows(loose, state.collapsed[ACTIVE_SECTION_KEY] === true, routeKey),
+  );
   return items;
 }
 
+/**
+ * `sections` with shown section `id` moved to `to` among the shown ones; hidden sections keep
+ * their places. Null when nothing moves.
+ */
+export function reorderShownSections<S extends { readonly id: string }>(
+  sections: readonly S[],
+  hidden: Readonly<Record<string, boolean>>,
+  id: string,
+  to: number,
+): S[] | null {
+  const shown = sections.filter((section) => hidden[section.id] !== true);
+  const from = shown.findIndex((section) => section.id === id);
+  if (from < 0 || to < 0 || to >= shown.length || to === from) return null;
+  const section = shown[from]!;
+  const newShown = shown.filter((_, index) => index !== from);
+  newShown.splice(to, 0, section);
+  const rest = sections.filter((candidate) => candidate.id !== id);
+  // Anchor on the shown neighbour it now sits before (or after, at the end).
+  const at =
+    to < newShown.length - 1
+      ? rest.findIndex((candidate) => candidate.id === newShown[to + 1]!.id)
+      : rest.findIndex((candidate) => candidate.id === newShown[to - 1]!.id) + 1;
+  rest.splice(at, 0, section);
+  return rest;
+}
+
+/** The shown index a header dragged from `from` takes when dropped at the line before `boundary`. */
+export const headerDropTarget = (from: number, boundary: number) =>
+  boundary > from ? boundary - 1 : boundary;
+
 /** Threads per group, counting rows hidden by a collapse. */
-export function sectionCounts(state: SectionsView, activeKeys: readonly string[]) {
+export function sectionCounts(
+  state: Pick<SectionsView, "sections" | "membership">,
+  activeKeys: readonly string[],
+) {
   const counts = new Map<string, number>();
   for (const key of activeKeys) {
     const id = sectionOfThread(state, key) ?? ACTIVE_SECTION_KEY;
@@ -117,9 +186,22 @@ function moveItem(items: readonly SidebarListItem[], activeIndex: number, overIn
 const itemId = (item: SidebarListItem) =>
   item.kind === "thread" ? item.key : `sidebar-marker-${item.marker}`;
 
+/** The group of the first header after `from`, within the active region. */
+function groupBelow(items: readonly SidebarListItem[], from: number): string | null {
+  for (const item of items.slice(from)) {
+    if (item.kind !== "marker") continue;
+    if (isShelfMarker(item.marker)) return null;
+    const fork = parseForkSidebarMarker(item.marker);
+    if (fork?.kind === "section-header") return fork.id;
+    if (fork?.kind === "active-header") return null;
+  }
+  return null;
+}
+
 /**
  * The section a drop puts `activeKey` in: a section id, null for Active, or undefined when the
- * row does not land among the active threads (pinned, settled, an invalid slot).
+ * row does not land among the active threads (pinned, settled, an invalid slot). A row above
+ * every header joins the group of the first header below it.
  */
 export function sectionAtDrop(
   items: readonly SidebarListItem[],
@@ -133,11 +215,13 @@ export function sectionAtDrop(
     return undefined;
   }
   let inActive = false;
-  let section: string | null = null;
-  for (const item of moveItem(items, activeIndex, overIndex)) {
+  let section: string | null | undefined;
+  const moved = moveItem(items, activeIndex, overIndex);
+  for (const [index, item] of moved.entries()) {
     if (item.kind === "thread") {
-      if (item.key === activeKey) return inActive ? section : undefined;
-      continue;
+      if (item.key !== activeKey) continue;
+      if (!inActive) return undefined;
+      return section === undefined ? groupBelow(moved, index + 1) : section;
     }
     if (item.marker === "pinned-divider") inActive = true;
     else if (isShelfMarker(item.marker)) inActive = false;

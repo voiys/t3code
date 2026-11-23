@@ -1,13 +1,25 @@
 import type { ContextMenuItem } from "@t3tools/contracts";
 import { T, useGT } from "gt-react";
-import type { KeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
+import type {
+  KeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
 
+import { Checkbox } from "~/components/ui/checkbox";
 import { CollapsibleSectionHeader } from "~/components/ui/collapsible-section-header";
 import { SortableSidebarMarker } from "~/components/sidebar/SidebarListMarkers";
 import { contextMenuSourceOf } from "~/contextMenuSource";
+import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
 
-import { parseForkSidebarMarker, sectionCounts, sectionOfThread } from "./sections.logic";
+import {
+  headerDropTarget,
+  parseForkSidebarMarker,
+  sectionCounts,
+  sectionOfThread,
+  shownSections,
+} from "./sections.logic";
 import {
   ACTIVE_SECTION_KEY,
   PINNED_SECTION_KEY,
@@ -21,7 +33,8 @@ export function useForkSidebarSections() {
   const sections = useForkSidebarSectionsStore((state) => state.sections);
   const membership = useForkSidebarSectionsStore((state) => state.membership);
   const collapsed = useForkSidebarSectionsStore((state) => state.collapsed);
-  return { sections, membership, collapsed };
+  const hidden = useForkSidebarSectionsStore((state) => state.hidden);
+  return { sections, membership, collapsed, hidden };
 }
 
 const MENU_PREFIX = "fork-section:";
@@ -46,7 +59,8 @@ export function withSectionMenu<Id extends string>(
       icon: "folder",
       children: [
         { id: id("none"), label: label.active, checked: current === null },
-        ...state.sections.map((section) => ({
+        // A section toggled off in the filter is no destination: the thread would vanish.
+        ...shownSections(state).map((section) => ({
           id: id(section.id),
           label: section.name,
           checked: current === section.id,
@@ -83,6 +97,7 @@ export function ForkSidebarMarkerRow(props: {
   const sections = useForkSidebarSectionsStore((state) => state.sections);
   const membership = useForkSidebarSectionsStore((state) => state.membership);
   const collapsed = useForkSidebarSectionsStore((state) => state.collapsed);
+  const hidden = useForkSidebarSectionsStore((state) => state.hidden);
   const editingSectionId = useForkSidebarSectionsStore((state) => state.editingSectionId);
   if (fork === null) return null;
   const markerName = props.marker as `fork-${string}`;
@@ -97,7 +112,7 @@ export function ForkSidebarMarkerRow(props: {
     );
   }
 
-  const counts = sectionCounts({ sections, membership, collapsed }, props.activeKeys);
+  const counts = sectionCounts({ sections, membership }, props.activeKeys);
   const key =
     fork.kind === "pinned-header"
       ? PINNED_SECTION_KEY
@@ -123,13 +138,15 @@ export function ForkSidebarMarkerRow(props: {
     event.preventDefault();
     const api = readLocalApi();
     if (!api) return;
-    const index = sections.findIndex(({ id }) => id === key);
+    const shown = shownSections({ sections, hidden });
+    const index = shown.findIndex(({ id }) => id === key);
     const items: ContextMenuItem[] = [
       ...(section
         ? [
             { id: "rename", label: gt("Rename section") },
             { id: "up", label: gt("Move up"), disabled: index <= 0 },
-            { id: "down", label: gt("Move down"), disabled: index >= sections.length - 1 },
+            { id: "down", label: gt("Move down"), disabled: index >= shown.length - 1 },
+            { id: "hide", label: gt("Hide section") },
           ]
         : []),
       { id: "new", label: gt("New section"), separatorBefore: section !== null },
@@ -154,6 +171,7 @@ export function ForkSidebarMarkerRow(props: {
     if (choice === "rename" && section) sidebarSectionActions.startEditing(section.id);
     else if (choice === "up" && section) sidebarSectionActions.move(section.id, -1);
     else if (choice === "down" && section) sidebarSectionActions.move(section.id, 1);
+    else if (choice === "hide" && section) sidebarSectionActions.toggleHidden(section.id);
     else if (choice === "new") sidebarSectionActions.create(gt("New section"));
     else if (choice === "collapse-all") sidebarSectionActions.setAllCollapsed(true);
     else if (choice === "expand-all") sidebarSectionActions.setAllCollapsed(false);
@@ -190,6 +208,8 @@ export function ForkSidebarMarkerRow(props: {
       className="relative mx-0.5 h-8"
     >
       <CollapsibleSectionHeader
+        data-fork-section-header={section?.id}
+        onPointerDown={section ? (event) => startHeaderDrag(event, section.id) : undefined}
         expanded={expanded}
         onClick={toggle}
         onContextMenu={(event) => void openMenu(event)}
@@ -200,4 +220,152 @@ export function ForkSidebarMarkerRow(props: {
       </CollapsibleSectionHeader>
     </SortableSidebarMarker>
   );
+}
+
+/** Marks the sidebar filter button while sections are toggled off. */
+export function ForkHiddenSectionsDot() {
+  const gt = useGT();
+  const sections = useForkSidebarSectionsStore((state) => state.sections);
+  const hidden = useForkSidebarSectionsStore((state) => state.hidden);
+  const hiddenCount = sections.length - shownSections({ sections, hidden }).length;
+  if (hiddenCount === 0) return null;
+  return (
+    <span
+      role="img"
+      aria-label={gt("Hidden sections: {count}", { count: hiddenCount })}
+      className="pointer-events-none absolute top-1 right-1 size-1.5 rounded-full bg-primary"
+    />
+  );
+}
+
+/** The sidebar filter's section toggles: a checked section shows its threads. */
+export function ForkSectionFilter() {
+  const gt = useGT();
+  const sections = useForkSidebarSectionsStore((state) => state.sections);
+  const hidden = useForkSidebarSectionsStore((state) => state.hidden);
+  if (sections.length === 0) return null;
+  const anyHidden = sections.some((section) => hidden[section.id] === true);
+  return (
+    <div className="border-t border-border/60 px-1 pt-1 pb-1.5" data-testid="fork-section-filter">
+      <div className="flex h-7 items-center justify-between px-2 text-xs text-muted-foreground">
+        <T>Sections</T>
+        {anyHidden ? (
+          <button
+            type="button"
+            className="rounded px-1 text-xs text-muted-foreground hover:text-foreground"
+            onClick={() => sidebarSectionActions.showAll()}
+          >
+            <T>Show all</T>
+          </button>
+        ) : null}
+      </div>
+      <ul aria-label={gt("Sections")}>
+        {sections.map((section) => {
+          const shown = hidden[section.id] !== true;
+          return (
+            <li key={section.id}>
+              <label className="flex h-8 cursor-pointer items-center gap-2 rounded-md px-2 text-sm hover:bg-accent/50 sm:h-7">
+                <Checkbox
+                  checked={shown}
+                  onCheckedChange={() => sidebarSectionActions.toggleHidden(section.id)}
+                  aria-label={gt("Show {name}", { name: section.name })}
+                />
+                <span className={cn("min-w-0 truncate", !shown && "text-muted-foreground")}>
+                  {section.name}
+                </span>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+const HEADER_DRAG_THRESHOLD_PX = 4;
+
+/**
+ * Drags a section header up or down among the shown sections. A line marks the gap it will
+ * drop into; Pinned stays above and Active below, so neither is a gap. A press that never
+ * moves stays a click, which folds the section. Modeled in ../tla/Sidebar.tla (HeaderDrop).
+ */
+function startHeaderDrag(event: ReactPointerEvent<HTMLElement>, sectionId: string) {
+  if (event.button !== 0 || event.altKey || event.metaKey || event.ctrlKey) return;
+  const header = event.currentTarget;
+  const list = header.closest("ul, ol");
+  if (!list) return;
+  const startY = event.clientY;
+  let dragging = false;
+  let boundary = -1;
+  let line: HTMLDivElement | null = null;
+
+  const blocks = () => {
+    const headers = [...list.querySelectorAll<HTMLElement>("[data-fork-section-header]")];
+    const end = list.querySelector<HTMLElement>('[data-testid="fork-sidebar-active-header"]');
+    const tops = headers.map((element) => element.getBoundingClientRect().top);
+    const bottom = end?.getBoundingClientRect().top ?? header.getBoundingClientRect().bottom;
+    return {
+      ids: headers.map((element) => element.dataset.forkSectionHeader!),
+      tops,
+      ends: [...tops.slice(1), bottom],
+    };
+  };
+
+  const placeLine = (y: number) => {
+    const { tops, ends } = blocks();
+    // The gap before the first block whose middle is below the pointer, or after the last.
+    const index = tops.findIndex((top, at) => y < (top + ends[at]!) / 2);
+    boundary = index === -1 ? tops.length : index;
+    const lineY = boundary < tops.length ? tops[boundary]! : ends.at(-1)!;
+    const rect = header.getBoundingClientRect();
+    line ??= Object.assign(document.createElement("div"), {
+      className: "pointer-events-none fixed z-50 h-0.5 rounded-full bg-primary",
+    });
+    if (!line.isConnected) document.body.append(line);
+    Object.assign(line.style, {
+      left: `${rect.left + 4}px`,
+      width: `${rect.width - 8}px`,
+      top: `${lineY - 1}px`,
+    });
+  };
+
+  const cleanup = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    window.removeEventListener("pointercancel", cleanup);
+    window.removeEventListener("keydown", onKey, true);
+    line?.remove();
+    header.style.opacity = "";
+    document.body.style.cursor = "";
+  };
+  const onMove = (move: PointerEvent) => {
+    if (!dragging && Math.abs(move.clientY - startY) < HEADER_DRAG_THRESHOLD_PX) return;
+    dragging = true;
+    header.style.opacity = "0.6";
+    document.body.style.cursor = "grabbing";
+    placeLine(move.clientY);
+  };
+  const onUp = () => {
+    cleanup();
+    if (!dragging) return;
+    // The click that ends a drag must not fold the section. The browser sends that click in the
+    // same task as pointerup, or not at all (released outside the window), so disarm right after.
+    const swallowClick = (click: MouseEvent) => click.stopPropagation();
+    window.addEventListener("click", swallowClick, { capture: true, once: true });
+    window.setTimeout(() => window.removeEventListener("click", swallowClick, true), 0);
+    const from = blocks().ids.indexOf(sectionId);
+    if (from !== -1 && boundary !== -1) {
+      sidebarSectionActions.reorderShown(sectionId, headerDropTarget(from, boundary));
+    }
+  };
+  const onKey = (key: globalThis.KeyboardEvent) => {
+    if (key.key !== "Escape") return;
+    key.stopPropagation();
+    dragging = false;
+    cleanup();
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+  window.addEventListener("pointercancel", cleanup);
+  window.addEventListener("keydown", onKey, true);
 }

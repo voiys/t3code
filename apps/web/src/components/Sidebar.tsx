@@ -281,6 +281,8 @@ import {
   useSidebarDrafts,
 } from "./sidebar/SidebarDraftBlock";
 import {
+  ForkHiddenSectionsDot,
+  ForkSectionFilter,
   ForkSidebarMarkerRow,
   handleSectionMenuChoice,
   useForkSidebarSections,
@@ -291,6 +293,7 @@ import {
   groupPinnedItems,
   sectionAtDrop,
   sectionOfThread,
+  withoutHiddenSections,
 } from "../fork/sidebar/sections.logic";
 import { sidebarSectionActions } from "../fork/sidebar/sectionsStore";
 import {
@@ -1389,7 +1392,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     serverConfigs,
     connectedEnvironmentIds,
     optimisticDrop,
-    threads: listedThreads,
+    // Fork: sections toggled off in the filter take their threads out of the list.
+    threads: boringSidebarEnabled
+      ? listedThreads
+      : withoutHiddenSections(listedThreads, forkSections, threadShellKey),
     delegatedUnderParent,
     routeRowThreadKey,
     departingThreadKey,
@@ -3209,6 +3215,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     ) : (
                       <FolderIcon className="size-4" />
                     )}
+                    {boringSidebarEnabled ? null : <ForkHiddenSectionsDot />}
                   </ComboboxTrigger>
                   {/* Refocusing the trigger after a pointer close shows its focus ring and opens its tooltip. */}
                   <ComboboxPopup
@@ -3352,6 +3359,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         );
                       }}
                     </ComboboxList>
+                    {boringSidebarEnabled || projectScopeMenuState.query.trim() !== "" ? null : (
+                      <ForkSectionFilter />
+                    )}
                   </ComboboxPopup>
                 </Combobox>
               }
