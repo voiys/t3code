@@ -227,15 +227,33 @@ export function ThreadSplitLayout(props: {
     event.stopPropagation();
     closeSlot(focusedSlotId);
   });
+  /**
+   * Plain Cmd/Ctrl+W closes the focused pane while there are two or more. It listens after the
+   * chat's own shortcuts, so a focused terminal or an open right panel tab still closes first.
+   */
+  const onCloseKey = useEffectEvent((event: KeyboardEvent) => {
+    if (hidden || !isSplit || focusedSlotId === null || event.defaultPrevented) return;
+    if (event.key.toLowerCase() !== "w" || event.repeat) return;
+    const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+    const chord = mac
+      ? event.metaKey && !event.ctrlKey && !event.altKey
+      : event.ctrlKey && !event.metaKey && !event.altKey;
+    if (!chord || event.shiftKey) return;
+    event.preventDefault();
+    closeSlot(focusedSlotId);
+  });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- listens for the split gestures on the whole document, ahead of the sidebar's own click handling
   useEffect(() => {
     const click = (event: MouseEvent) => onAltClick(event);
     const keydown = (event: KeyboardEvent) => onKeyDown(event);
+    const closeKey = (event: KeyboardEvent) => onCloseKey(event);
     document.addEventListener("click", click, true);
     window.addEventListener("keydown", keydown, true);
+    window.addEventListener("keydown", closeKey);
     return () => {
       document.removeEventListener("click", click, true);
       window.removeEventListener("keydown", keydown, true);
+      window.removeEventListener("keydown", closeKey);
     };
   }, []);
 
