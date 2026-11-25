@@ -9,6 +9,7 @@ import {
 
 import { cn } from "../../lib/utils";
 import { ACPRegistryIcon } from "../Icons";
+import { isBundledAcpIconUrl } from "./acpIcons/bundledAcpIcons";
 
 const ACP_REGISTRY_ICON_CACHE = "t3-acp-registry-icons-v1";
 const MAX_ICON_BYTES = 512 * 1_024;
@@ -96,7 +97,27 @@ const acpRegistryIconSourceAtom = Atom.family((iconUrl: string) =>
 
 const NO_ICON_SOURCE_ATOM = Atom.make(AsyncResult.initial<string>());
 
-export function AcpRegistryAgentIcon({
+export function AcpRegistryAgentIcon(props: {
+  readonly icon: string | null;
+  readonly className?: string;
+  readonly fallbackClassName?: string;
+}) {
+  if (!isBundledAcpIconUrl(props.icon)) return <RegistryAgentIcon {...props} />;
+  // A bundled icon is ours: drawn in its own colors, with no fetch to wait on.
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "relative flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted",
+        props.className,
+      )}
+    >
+      <img alt="" className="size-full object-contain" decoding="async" src={props.icon} />
+    </span>
+  );
+}
+
+function RegistryAgentIcon({
   icon,
   className,
   fallbackClassName,

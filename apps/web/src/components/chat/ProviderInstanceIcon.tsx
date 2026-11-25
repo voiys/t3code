@@ -25,6 +25,7 @@ import {
   officialAcpRegistryIconUrlForAgentId,
   resolveOfficialAcpRegistryIconUrl,
 } from "../settings/AcpRegistryIcon";
+import { isBundledAcpIconUrl } from "../settings/acpIcons/bundledAcpIcons";
 
 const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>> = {
   [ProviderDriverKind.make("codex")]: OpenAI,
@@ -80,6 +81,7 @@ export function resolveProviderInstanceAcpRegistryIconUrl(input: {
   readonly iconUrl?: string | undefined;
 }): string | null {
   if (input.driverKind !== "acpRegistry") return null;
+  if (isBundledAcpIconUrl(input.iconUrl)) return input.iconUrl;
   return (
     resolveOfficialAcpRegistryIconUrl(input.iconUrl ?? null) ??
     officialAcpRegistryIconUrlForAgentId(input.agentId?.trim() || null)

@@ -71,6 +71,7 @@ import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayo
 import { AcpSessionManagementSection } from "./AcpSessionManagementSection";
 import { FoldedSettingsSection } from "./FoldedSettingsSection";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
+import { bundledLocalAcpIconUrl } from "./acpIcons/bundledAcpIcons";
 import {
   type CustomModelSave,
   customModelsKey,
@@ -995,7 +996,7 @@ export function ProviderInstanceCard({
       }
       acpRegistryIconUrl={
         readConfigString(instance.config, "source") === "local"
-          ? undefined
+          ? (bundledLocalAcpIconUrl(readConfigString(instance.config, "commandPath")) ?? undefined)
           : (readConfigString(instance.config, "registryIconUrl") ?? undefined)
       }
       showBadge={Boolean(accentColor)}
