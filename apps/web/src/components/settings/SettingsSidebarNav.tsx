@@ -25,6 +25,7 @@ import {
   KeyRoundIcon,
   MicIcon,
   PaletteIcon,
+  PuzzleIcon,
   SearchIcon,
   ServerIcon,
   Settings2Icon,
@@ -113,6 +114,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/secrets": KeyRoundIcon,
   "/settings/maintenance": WrenchIcon,
   "/settings/labs": FlaskConicalIcon,
+  "/settings/plugins": PuzzleIcon,
   "/settings/about": InfoIcon,
   "/settings/archived": ArchiveIcon,
 };

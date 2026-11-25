@@ -8,7 +8,7 @@ import {
   type SidebarListMarker,
   type SidebarSection,
 } from "./Sidebar.logic";
-import { projectForkRegions } from "../fork/sidebar/sections.logic";
+import { getSidebarPlugin } from "../plugins/host";
 
 const stationary = { x: 0, y: 0, scaleX: 1, scaleY: 1 };
 const hidden = { ...stationary, scaleY: 0 };
@@ -173,7 +173,8 @@ export function createSidebarSortingStrategy(input: {
       if (groups[name].length > 0) projected.push(...groups[name]);
       else marker(`${name}-placeholder`);
     };
-    const fork = projectForkRegions(items, activeIndex, overIndex, target.section);
+    const fork =
+      getSidebarPlugin()?.projectDragRegions(items, activeIndex, overIndex, target.section) ?? null;
     marker("pinned-header");
     if (fork) projected.push(...fork.pinnedHeader);
     projected.push(...groups.pinned);

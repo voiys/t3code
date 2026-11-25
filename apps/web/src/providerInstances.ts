@@ -17,7 +17,7 @@ import {
   resolveProviderInstanceDisplayName,
   shouldShowInstanceBadge,
 } from "@t3tools/client-runtime/state/provider-instance-display";
-import { bundledLocalAcpIconUrl } from "./components/settings/acpIcons/bundledAcpIcons";
+import { resolveLocalAcpIconUrl } from "./plugins/host";
 
 export { normalizeProviderAccentColor, shouldShowInstanceBadge };
 
@@ -175,7 +175,7 @@ function applyProviderInstanceBranding(
     return {
       ...entry,
       acpRegistryAgentId: undefined,
-      acpRegistryIconUrl: bundledLocalAcpIconUrl(config.commandPath) ?? undefined,
+      acpRegistryIconUrl: resolveLocalAcpIconUrl(config.commandPath) ?? undefined,
     };
   }
   const agentId = config?.agentId;

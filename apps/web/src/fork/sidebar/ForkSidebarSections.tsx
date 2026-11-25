@@ -29,14 +29,6 @@ import {
 import "./fork-sidebar.css";
 
 /** Fork-only: the section state the sidebar list is built from. */
-export function useForkSidebarSections() {
-  const sections = useForkSidebarSectionsStore((state) => state.sections);
-  const membership = useForkSidebarSectionsStore((state) => state.membership);
-  const collapsed = useForkSidebarSectionsStore((state) => state.collapsed);
-  const hidden = useForkSidebarSectionsStore((state) => state.hidden);
-  return { sections, membership, collapsed, hidden };
-}
-
 const MENU_PREFIX = "fork-section:";
 
 /** Adds "Move to section" to a thread's menu. */

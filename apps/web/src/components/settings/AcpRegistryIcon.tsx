@@ -9,7 +9,7 @@ import {
 
 import { cn } from "../../lib/utils";
 import { ACPRegistryIcon } from "../Icons";
-import { isBundledAcpIconUrl } from "./acpIcons/bundledAcpIcons";
+import { useIsPluginBundledAcpIconUrl } from "../../plugins/host";
 
 const ACP_REGISTRY_ICON_CACHE = "t3-acp-registry-icons-v1";
 const MAX_ICON_BYTES = 512 * 1_024;
@@ -102,7 +102,8 @@ export function AcpRegistryAgentIcon(props: {
   readonly className?: string;
   readonly fallbackClassName?: string;
 }) {
-  if (!isBundledAcpIconUrl(props.icon)) return <RegistryAgentIcon {...props} />;
+  const isBundled = useIsPluginBundledAcpIconUrl(props.icon);
+  if (!isBundled || !props.icon) return <RegistryAgentIcon {...props} />;
   // A bundled icon is ours: drawn in its own colors, with no fetch to wait on.
   return (
     <span

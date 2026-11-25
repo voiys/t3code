@@ -280,22 +280,7 @@ import {
   useDraftTerminalLabels,
   useSidebarDrafts,
 } from "./sidebar/SidebarDraftBlock";
-import {
-  ForkHiddenSectionsDot,
-  ForkSectionFilter,
-  ForkSidebarMarkerRow,
-  handleSectionMenuChoice,
-  useForkSidebarSections,
-  withSectionMenu,
-} from "../fork/sidebar/ForkSidebarSections";
-import {
-  groupActiveItems,
-  groupPinnedItems,
-  sectionAtDrop,
-  sectionOfThread,
-  withoutHiddenSections,
-} from "../fork/sidebar/sections.logic";
-import { sidebarSectionActions } from "../fork/sidebar/sectionsStore";
+import { useSidebarPlugin } from "../plugins/host";
 import {
   SidebarProjectFolderHeader,
   sidebarFolderRowId,
@@ -1158,7 +1143,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     routeThreadRef === null
       ? null
       : scopedThreadKey(resolveListedAncestorThreadRef(routeThreadRef, threads));
-  const forkSections = useForkSidebarSections();
+  const sidebarPlugin = useSidebarPlugin();
   const isSearchingThreads = threadSearchQuery.trim().length > 0;
   // The open draft's first send names its thread in place; a finalized draft reached by
   // navigation resolves through its redirect instead, and still reveals.
@@ -1392,10 +1377,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     serverConfigs,
     connectedEnvironmentIds,
     optimisticDrop,
-    // Fork: sections toggled off in the filter take their threads out of the list.
-    threads: boringSidebarEnabled
-      ? listedThreads
-      : withoutHiddenSections(listedThreads, forkSections, threadShellKey),
+    // Plugin: sections toggled off in the filter take their threads out of the list.
+    threads:
+      boringSidebarEnabled || sidebarPlugin === null
+        ? listedThreads
+        : sidebarPlugin.extension.filterThreads(listedThreads, sidebarPlugin.state, threadShellKey),
     delegatedUnderParent,
     routeRowThreadKey,
     departingThreadKey,
@@ -2033,13 +2019,25 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     }
     const items: SidebarListItem[] = [{ kind: "marker", marker: "pinned-header" }];
     const pinnedRows = rowsOf(pinnedThreads, "pinned");
-    items.push(...groupPinnedItems(pinnedRows, forkSections, routeRowThreadKey));
+    items.push(
+      ...(sidebarPlugin === null
+        ? pinnedRows
+        : sidebarPlugin.extension.groupPinnedItems(
+            pinnedRows,
+            sidebarPlugin.state,
+            routeRowThreadKey,
+          )),
+    );
     items.push({ kind: "marker", marker: "pinned-divider" });
     const activeRows = rowsOf(activeThreads, "active");
     items.push({ kind: "marker", marker: "active-placeholder" });
     items.push(
-      ...(projectFolders === null
-        ? groupActiveItems(activeRows, forkSections, routeRowThreadKey)
+      ...(projectFolders === null && sidebarPlugin !== null
+        ? sidebarPlugin.extension.groupActiveItems(
+            activeRows,
+            sidebarPlugin.state,
+            routeRowThreadKey,
+          )
         : activeRows),
     );
     if (workingThreads.length > 0) {
@@ -2148,13 +2146,21 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       (id) => {
         const target = resolveSidebarDropTarget(sidebarListItems, draggedThreadKey, id);
         if (target === null) return false;
-        // Fork: crossing a section header is a move even when the thread order stays put.
-        const forkSection = sectionAtDrop(sidebarListItems, draggedThreadKey, id);
-        if (
-          forkSection !== undefined &&
-          forkSection !== sectionOfThread(forkSections, draggedThreadKey)
-        )
-          return true;
+        // Plugin: crossing a section header is a move even when the thread order stays put.
+        if (sidebarPlugin !== null) {
+          const pluginSection = sidebarPlugin.extension.sectionAtDrop(
+            sidebarListItems,
+            draggedThreadKey,
+            id,
+          );
+          if (
+            pluginSection !== undefined &&
+            pluginSection !==
+              sidebarPlugin.extension.sectionOfThread(sidebarPlugin.state, draggedThreadKey)
+          ) {
+            return true;
+          }
+        }
         return (
           planSidebarThreadDrop({
             activeKey: draggedThreadKey,
@@ -2189,12 +2195,17 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         : resolveSidebarDropTarget(sidebarListItems, activeKey, String(event.over.id));
     const activeThread = threadByKey.get(activeKey);
     if (activeSection === undefined || target === null || activeThread === undefined) return;
-    // Fork: the section header above the dropped row becomes its section.
-    const forkSection =
-      event.over === null
-        ? undefined
-        : sectionAtDrop(sidebarListItems, activeKey, String(event.over.id));
-    if (forkSection !== undefined) sidebarSectionActions.assign([activeKey], forkSection);
+    // Plugin: the section header above the dropped row becomes its section.
+    if (sidebarPlugin !== null && event.over !== null) {
+      const pluginSection = sidebarPlugin.extension.sectionAtDrop(
+        sidebarListItems,
+        activeKey,
+        String(event.over.id),
+      );
+      if (pluginSection !== undefined) {
+        sidebarPlugin.extension.assignThreads([activeKey], pluginSection);
+      }
+    }
     const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
     const plan = planSidebarThreadDrop({
       activeKey,
@@ -2753,59 +2764,62 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 projectRef.projectId === thread.projectId,
             ),
           ) ?? null;
+        const baseMenuItems = buildThreadActionMenuItems({
+          canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
+          canTriage: threadTriagePermitted(threadRef.environmentId),
+          branch: thread.branch ?? null,
+          // An archived project is not a filter choice.
+          projectFilter:
+            threadProjectGroup && !threadProjectGroup.archived
+              ? {
+                  label: threadProjectGroup.displayName,
+                  isActive: projectScopeKeys.includes(threadProjectGroup.projectKey),
+                }
+              : null,
+          isPinned,
+          isSettled,
+          autoSettleEnabled: thread.autoSettleDisabledAt == null,
+          isSnoozed,
+          canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
+          isRegeneratingTitle,
+          isRunning: !threadRuntimeCanArchive(thread.runtime),
+          hasCompletedRun: thread.latestRun?.completedAt != null,
+          canShareWithGuest: appAtomRegistry.get(canShareWithGuestAtom(threadRef.environmentId)),
+          canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+          canRename: !fromSearch,
+          supports: {
+            settlement: configLoaded,
+            autoSettleOptOut: supportsAutoSettleOptOut,
+            snooze: configLoaded,
+            pinning: configLoaded,
+            titleRegeneration: configLoaded,
+          },
+          snoozePresets,
+        });
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
-            withSectionMenu(
-              buildThreadActionMenuItems({
-                canOperate: readEnvironmentScope(
-                  threadRef.environmentId,
-                  AuthOrchestrationOperateScope,
-                ),
-                canTriage: threadTriagePermitted(threadRef.environmentId),
-                branch: thread.branch ?? null,
-                // An archived project is not a filter choice.
-                projectFilter:
-                  threadProjectGroup && !threadProjectGroup.archived
-                    ? {
-                        label: threadProjectGroup.displayName,
-                        isActive: projectScopeKeys.includes(threadProjectGroup.projectKey),
-                      }
-                    : null,
-                isPinned,
-                isSettled,
-                autoSettleEnabled: thread.autoSettleDisabledAt == null,
-                isSnoozed,
-                canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
-                isRegeneratingTitle,
-                isRunning: !threadRuntimeCanArchive(thread.runtime),
-                hasCompletedRun: thread.latestRun?.completedAt != null,
-                canShareWithGuest: appAtomRegistry.get(
-                  canShareWithGuestAtom(threadRef.environmentId),
-                ),
-                canTurnIntoProject: canTurnThreadIntoProject(threadRef),
-                canRename: !fromSearch,
-                supports: {
-                  settlement: configLoaded,
-                  autoSettleOptOut: supportsAutoSettleOptOut,
-                  snooze: configLoaded,
-                  pinning: configLoaded,
-                  titleRegeneration: configLoaded,
-                },
-                snoozePresets,
-              }),
-              threadKey,
-              {
-                title: gt("Move to section"),
-                active: gt("Active", { $context: "sidebar section" }),
-                newSection: gt("New section…"),
-              },
-            ),
+            sidebarPlugin === null
+              ? baseMenuItems
+              : sidebarPlugin.extension.extendThreadContextMenu(baseMenuItems, threadKey, {
+                  title: gt("Move to section"),
+                  active: gt("Active", { $context: "sidebar section" }),
+                  newSection: gt("New section…"),
+                }),
             position,
             source,
           ),
         );
         if (clicked._tag === "Failure" || clicked.value === null) return;
-        if (handleSectionMenuChoice(clicked.value, threadKey, gt("New section"))) return;
+        if (
+          sidebarPlugin !== null &&
+          sidebarPlugin.extension.handleThreadContextMenuChoice(
+            clicked.value,
+            threadKey,
+            gt("New section"),
+          )
+        ) {
+          return;
+        }
         if (
           threadActionRequiresOperate(clicked.value) &&
           !checkThreadOperations([thread], isThreadTriageAction(clicked.value))
@@ -3215,7 +3229,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     ) : (
                       <FolderIcon className="size-4" />
                     )}
-                    {boringSidebarEnabled ? null : <ForkHiddenSectionsDot />}
+                    {boringSidebarEnabled || sidebarPlugin === null ? null : (
+                      <sidebarPlugin.extension.HiddenSectionsDot />
+                    )}
                   </ComboboxTrigger>
                   {/* Refocusing the trigger after a pointer close shows its focus ring and opens its tooltip. */}
                   <ComboboxPopup
@@ -3359,8 +3375,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         );
                       }}
                     </ComboboxList>
-                    {boringSidebarEnabled || projectScopeMenuState.query.trim() !== "" ? null : (
-                      <ForkSectionFilter />
+                    {boringSidebarEnabled ||
+                    sidebarPlugin === null ||
+                    projectScopeMenuState.query.trim() !== "" ? null : (
+                      <sidebarPlugin.extension.SectionFilter />
                     )}
                   </ComboboxPopup>
                 </Combobox>
@@ -3703,14 +3721,17 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           continue;
                         }
                         if (item.marker.startsWith("fork-")) {
-                          items.push(
-                            <ForkSidebarMarkerRow
-                              key={item.marker}
-                              marker={item.marker}
-                              pinnedCount={pinnedThreads.length}
-                              activeKeys={activeKeys}
-                            />,
-                          );
+                          if (sidebarPlugin !== null) {
+                            const MarkerRow = sidebarPlugin.extension.MarkerRow;
+                            items.push(
+                              <MarkerRow
+                                key={item.marker}
+                                marker={item.marker}
+                                pinnedCount={pinnedThreads.length}
+                                activeKeys={activeKeys}
+                              />,
+                            );
+                          }
                           continue;
                         }
                         if (projectFolders !== null && item.marker === "active-placeholder") {

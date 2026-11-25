@@ -71,7 +71,7 @@ import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayo
 import { AcpSessionManagementSection } from "./AcpSessionManagementSection";
 import { FoldedSettingsSection } from "./FoldedSettingsSection";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
-import { bundledLocalAcpIconUrl } from "./acpIcons/bundledAcpIcons";
+import { useLocalAcpIconUrl } from "../../plugins/host";
 import {
   type CustomModelSave,
   customModelsKey,
@@ -984,6 +984,12 @@ export function ProviderInstanceCard({
     updateEnvironment(providerEnvironmentWithoutNames(instance.environment, new Set([field.name])));
   };
 
+  const localAcpIconUrl = useLocalAcpIconUrl(
+    readConfigString(instance.config, "source") === "local"
+      ? readConfigString(instance.config, "commandPath")
+      : null,
+  );
+
   const titleIconNode = (
     <ProviderInstanceIcon
       driverKind={driverKind ?? instance.driver}
@@ -996,7 +1002,7 @@ export function ProviderInstanceCard({
       }
       acpRegistryIconUrl={
         readConfigString(instance.config, "source") === "local"
-          ? (bundledLocalAcpIconUrl(readConfigString(instance.config, "commandPath")) ?? undefined)
+          ? (localAcpIconUrl ?? undefined)
           : (readConfigString(instance.config, "registryIconUrl") ?? undefined)
       }
       showBadge={Boolean(accentColor)}
